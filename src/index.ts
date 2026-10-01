@@ -20,7 +20,7 @@ import { type OnEvent, Trail } from "./trail.js";
 
 export { conversation } from "./conversation.js";
 export type { Decision } from "./decide.js";
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.0"; // x-release-please-version
 export const DEFAULT_URL = "https://api.tryagentcompile.com";
 
 export type Mode = "live" | "shadow";

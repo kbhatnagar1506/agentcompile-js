@@ -1,0 +1,50 @@
+# Releases. On every push to main, release-please keeps a "release PR" open that bumps the
+# version (package.json and VERSION in src/index.ts) and writes CHANGELOG.md from conventional
+# commits (feat: -> minor, fix: -> patch, feat!: -> major). Merging that PR tags vX.Y.Z and this
+# workflow publishes to npm.
+#
+# npm trusted publishing: owner kbhatnagar1506, repo agentcompile-js, workflow release.yml,
+# environment npm. No token is stored anywhere; npm issues a short-lived one to this job, and
+# the package gets a provenance attestation linking it to this repo and commit.
+name: Release
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: [release-please]
+    if: needs.release-please.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+      # Trusted publishing needs npm 11.5 or newer: Node 24 ships it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - run: npm ci
+      # prepublishOnly runs typecheck, tests and build first.
+      - run: npm publish --access public --provenance
