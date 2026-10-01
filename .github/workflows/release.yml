@@ -10,6 +10,8 @@ name: Release
 on:
   push:
     branches: [main]
+  # Re-run release-please by hand (Actions -> Release -> Run workflow).
+  workflow_dispatch:
 
 permissions:
   contents: write
