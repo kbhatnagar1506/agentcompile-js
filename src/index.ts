@@ -13,13 +13,16 @@
 
 import { buildAnthropic, buildOpenAI } from "./build.js";
 import { Capturer, flushAll } from "./capture.js";
-import { currentConversation } from "./conversation.js";
+import { capturingStream } from "./assemble.js";
+import { currentConversation, currentCustomer } from "./conversation.js";
+import { flushOutcomes, remember } from "./outcome.js";
 import { type Decision, type Provider, type Settings, decide } from "./decide.js";
 import { payload } from "./payload.js";
 import { loadScrubKey } from "./scrub.js";
 import { type OnEvent, Trail } from "./trail.js";
 
 export { conversation } from "./conversation.js";
+export { OUTCOMES, type Outcome, outcome } from "./outcome.js";
 export type { Decision } from "./decide.js";
 export const VERSION = "0.1.0"; // x-release-please-version
 export const DEFAULT_URL = "https://api.tryagentcompile.com";
@@ -69,6 +72,7 @@ export function wrap<T extends object>(client: T, options: WrapOptions = {}): T 
     ? new Capturer(settings, undefined, options.scrub === false ? null : loadScrubKey())
     : null;
   const router = { settings, trail, mode, capturer };
+  remember(settings); // outcome() sends with the client wrapped last
 
   const anyClient = client as Record<string, any>;
   const completions = anyClient.chat?.completions;
@@ -89,6 +93,7 @@ export function wrap<T extends object>(client: T, options: WrapOptions = {}): T 
 /** Send every captured call still queued (short scripts and tests). */
 export async function flush(): Promise<void> {
   await flushAll();
+  await flushOutcomes();
 }
 
 interface Router {
@@ -104,8 +109,26 @@ function wrapCreate(router: Router, provider: Provider, resource: Record<string,
   const original = resource.create as (...args: unknown[]) => Promise<unknown>;
   return async function create(params: Record<string, unknown>, ...rest: unknown[]): Promise<unknown> {
     const started = performance.now();
-    const { conversationId: ownId, conversation_id: snakeId, ...realParams } = params ?? {};
+    const {
+      conversationId: ownId,
+      conversation_id: snakeId,
+      customerId,
+      customer_id: snakeCustomer,
+      ...realParams
+    } = params ?? {};
     const conversationId = (ownId ?? snakeId ?? currentConversation()) as string | undefined;
+    const customer = (customerId ?? snakeCustomer ?? currentCustomer()) as string | undefined;
+    const capture = (result: unknown): unknown => {
+      const capturer = router.capturer;
+      if (!capturer) return result;
+      if (!stream || !result || typeof result !== "object") {
+        capturer.add(provider, conversationId, realParams, result, stream, { customer });
+        return result;
+      }
+      return capturingStream(result, (chunks, complete) =>
+        capturer.addStream(provider, conversationId, realParams, chunks, complete, customer),
+      );
+    };
     let decision: Decision | null = null;
     let decideMs: number | undefined;
     let error: string | undefined;
@@ -143,8 +166,7 @@ function wrapCreate(router: Router, provider: Provider, resource: Record<string,
       try {
         const result = build(answer, realParams, stream);
         record();
-        router.capturer?.add(provider, conversationId, realParams, result, stream);
-        return result;
+        return capture(result);
       } catch (err) {
         // fail open: a compiled answer we can't shape goes to the model
         route = "fail-open";
@@ -153,8 +175,7 @@ function wrapCreate(router: Router, provider: Provider, resource: Record<string,
     }
     const result = await original.call(resource, realParams, ...rest);
     record();
-    router.capturer?.add(provider, conversationId, realParams, result, stream);
-    return result;
+    return capture(result);
   };
 }
 

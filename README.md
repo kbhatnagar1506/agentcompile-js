@@ -62,6 +62,25 @@ any client shaped like them. ESM and CommonJS.
 
 Apache-2.0
 
+## Outcomes and customers
+
+Tell AgentCompile how a conversation ended, so it learns only from the ones that went well:
+
+```ts
+import { outcome } from "agentcompile";
+outcome(ticket.id, "resolved"); // or escalated, unresolved, abandoned, reopened, complaint
+```
+
+Pass a stable customer id so repeat jobs are counted per customer (scrubbed like everything
+else when capture is on):
+
+```ts
+await conversation(ticket.id, () => runAgent(ticket), { customer: ticket.customerId });
+```
+
+Streamed answers are captured too: your agent reads the stream as always, and the whole answer
+is captured once it ends.
+
 ## Privacy
 
 With `capture: true`, personal data is scrubbed on your machine before anything is sent:
