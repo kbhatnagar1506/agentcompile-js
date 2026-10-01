@@ -16,6 +16,7 @@ import { Capturer, flushAll } from "./capture.js";
 import { currentConversation } from "./conversation.js";
 import { type Decision, type Provider, type Settings, decide } from "./decide.js";
 import { payload } from "./payload.js";
+import { loadScrubKey } from "./scrub.js";
 import { type OnEvent, Trail } from "./trail.js";
 
 export { conversation } from "./conversation.js";
@@ -43,6 +44,10 @@ export interface WrapOptions {
   /** Send each call's request and answer to AgentCompile in the background (opt-in; or
    * AGENTCOMPILE_CAPTURE=1). Never slows a call. */
   capture?: boolean;
+  /** With capture: turn emails, cards, phones and account numbers into keyed tokens on this
+   * machine before anything is sent (default true; key: AGENTCOMPILE_SCRUB_KEY, else one
+   * created once in ~/.agentcompile/scrub.key). */
+  scrub?: boolean;
   /** For tests and proxies: the fetch used to reach AgentCompile. */
   fetch?: typeof fetch;
 }
@@ -60,7 +65,9 @@ export function wrap<T extends object>(client: T, options: WrapOptions = {}): T 
   };
   const trail = new Trail(options.trail ?? true, options.onEvent);
   const captureOn = options.capture ?? ["1", "true", "yes"].includes(process.env.AGENTCOMPILE_CAPTURE ?? "");
-  const capturer = captureOn ? new Capturer(settings) : null;
+  const capturer = captureOn
+    ? new Capturer(settings, undefined, options.scrub === false ? null : loadScrubKey())
+    : null;
   const router = { settings, trail, mode, capturer };
 
   const anyClient = client as Record<string, any>;
