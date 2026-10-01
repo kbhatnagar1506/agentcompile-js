@@ -8,6 +8,7 @@
 
 import { type Provider, type Settings, endpoint, headers } from "./decide.js";
 import { jsonable, payload } from "./payload.js";
+import { scrubCall } from "./scrub.js";
 
 export const MAX_QUEUE = 2000;
 export const BATCH = 50;
@@ -30,6 +31,8 @@ export class Capturer {
   constructor(
     private readonly settings: Settings,
     private readonly maxQueue = MAX_QUEUE,
+    /** null: send as is (scrub: false). Otherwise personal data is tokenized before queueing. */
+    private readonly scrubKey: Buffer | null = null,
   ) {
     all.add(this);
   }
@@ -42,14 +45,21 @@ export class Capturer {
     stream = false,
   ): void {
     try {
+      let request: unknown = payload(params);
+      // A streamed answer is not captured yet: the record keeps the request and says so.
+      let answer: unknown = stream ? null : jsonable(response);
+      if (this.scrubKey) {
+        request = scrubCall(request, this.scrubKey);
+        answer = scrubCall(answer, this.scrubKey);
+      }
       const record: Record<string, unknown> = {
         provider,
         conversation_id: conversationId ?? null,
         timestamp: new Date().toISOString(),
-        request: payload(params),
-        // A streamed answer is not captured yet: the record keeps the request and says so.
-        response: stream ? null : jsonable(response),
+        request,
+        response: answer,
       };
+      if (this.scrubKey) record.scrubbed = true;
       if (stream) record.stream = true;
       if (this.queue.length >= this.maxQueue) {
         this.queue.shift();
