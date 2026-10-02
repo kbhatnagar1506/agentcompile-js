@@ -13,6 +13,8 @@ const MESSAGES = [{ role: "user" as const, content: "cancel order #W1" }];
 const CALL = { action: "tool_call", tool: "get_order_details", args: { order_id: "#W1" }, call_id: "call_1" };
 const SAY = { action: "say", text: "Order #W1 is cancelled." };
 const FORWARD = { action: "forward", reason: "no job matched" };
+const TOOLS = [{ type: "function", function: { name: "get_order_details", parameters: { type: "object" } } }];
+const ANTHROPIC_TOOLS = [{ name: "get_order_details", input_schema: { type: "object" } }];
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -78,7 +80,7 @@ describe("openai", () => {
   it("answers a compiled tool call without calling the model", async () => {
     const fake = new Fake(CALL);
     const client = openai(fake);
-    const resp: any = await client.chat.completions.create({ model: "gpt-x", messages: MESSAGES, conversation_id: "c1" } as any);
+    const resp: any = await client.chat.completions.create({ model: "gpt-x", messages: MESSAGES, tools: TOOLS, conversation_id: "c1" } as any);
     const call = resp.choices[0].message.tool_calls[0];
     expect(resp.choices[0].finish_reason).toBe("tool_calls");
     expect(call.function.name).toBe("get_order_details");
@@ -88,7 +90,7 @@ describe("openai", () => {
     expect(sent.headers.get("x-agentcompiler-key")).toBe("ack_acme.k");
     expect(sent.headers.get("x-agentcompiler-conversation")).toBe("c1");
     expect(sent.headers.get("x-agentcompiler-company")).toBeNull();
-    expect(sent.body).toEqual({ provider: "openai", request: { model: "gpt-x", messages: MESSAGES } });
+    expect(sent.body).toEqual({ provider: "openai", request: { model: "gpt-x", messages: MESSAGES, tools: TOOLS } });
     expect(trail()[0].route).toBe("compiled");
   });
 
@@ -157,7 +159,7 @@ describe("openai", () => {
   });
 
   it("streams a compiled tool call", async () => {
-    const stream: any = await openai(new Fake(CALL)).chat.completions.create({ model: "m", messages: MESSAGES, stream: true, conversation_id: "c1" } as any);
+    const stream: any = await openai(new Fake(CALL)).chat.completions.create({ model: "m", messages: MESSAGES, tools: TOOLS, stream: true, conversation_id: "c1" } as any);
     const chunks: any[] = [];
     for await (const chunk of stream) chunks.push(chunk);
     expect(chunks[0].choices[0].delta.tool_calls[0].function.name).toBe("get_order_details");
@@ -205,7 +207,7 @@ describe("anthropic", () => {
   });
 
   it("streams a compiled tool use", async () => {
-    const stream: any = await anthropic(new Fake(CALL)).messages.create({ model: "claude", max_tokens: 100, messages: MESSAGES, stream: true, conversation_id: "c1" } as any);
+    const stream: any = await anthropic(new Fake(CALL)).messages.create({ model: "claude", max_tokens: 100, messages: MESSAGES, tools: ANTHROPIC_TOOLS, stream: true, conversation_id: "c1" } as any);
     const types: string[] = [];
     let partial = "";
     for await (const event of stream) {

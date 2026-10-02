@@ -11,7 +11,7 @@ const hex = (n: number) => randomUUID().replace(/-/g, "").slice(0, n);
  * SDKs' Stream objects agents commonly touch. */
 export class CompiledStream<T> implements AsyncIterable<T> {
   readonly controller = new AbortController();
-  constructor(private readonly items: T[]) {}
+  constructor(readonly items: T[]) {}
   async *[Symbol.asyncIterator](): AsyncIterator<T> {
     for (const item of this.items) yield item;
   }
