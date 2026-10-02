@@ -31,12 +31,14 @@ const client = wrap(new Anthropic(), { key: process.env.AGENTCOMPILE_KEY });
 | --- | --- | --- |
 | `compiled` | A known job: AgentCompile answers with a verified routine's next step | No |
 | `forwarded` | Anything else | Yes, unchanged, your key |
-| `fail-open` | AgentCompile is slow (over `timeoutMs`) or unreachable | Yes |
+| `fail-open` | AgentCompile is slow (over `timeoutMs`, the whole call), unreachable, or proposed a tool you didn't pass in `tools`. After 5 failures in a row the SDK stops asking for 30 s, then tries one call | Yes |
 | `shadow` | `mode: "shadow"`: AgentCompile decides, but your model always answers | Yes |
+| `unsupported` | The request asks for what a compiled answer couldn't honour: `n` > 1, a forced `tool_choice`, a `response_format`. AgentCompile isn't asked | Yes |
 | `no-conversation` | No conversation id | Yes |
 
 Compiled answers have exactly the shape of `chat.completions.create()` or `messages.create()`,
-streamed or not, so your agent loop doesn't change. Your provider key never reaches us.
+streamed or not, so your agent loop doesn't change: `.withResponse()` and `.asResponse()` work as
+on the SDKs' own calls. Your provider key never reaches us.
 
 ## Options
 

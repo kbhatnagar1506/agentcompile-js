@@ -12,16 +12,19 @@
  */
 
 import { buildAnthropic, buildOpenAI } from "./build.js";
-import { Capturer, flushAll } from "./capture.js";
+import { type Capturer, capturerFor, flushAll } from "./capture.js";
 import { capturingStream } from "./assemble.js";
 import { currentConversation, currentCustomer } from "./conversation.js";
 import { flushOutcomes, remember } from "./outcome.js";
-import { type Decision, type Provider, type Settings, decide } from "./decide.js";
+import { Breaker, type Decision, type Provider, type Settings, decide } from "./decide.js";
 import { payload } from "./payload.js";
+import { AgentCompilePromise, type Stage } from "./promise.js";
+import { offered, unsupported } from "./shape.js";
 import { loadScrubKey } from "./scrub.js";
 import { type OnEvent, Trail } from "./trail.js";
 
 export { conversation } from "./conversation.js";
+export { AgentCompilePromise } from "./promise.js";
 export { OUTCOMES, type Outcome, outcome } from "./outcome.js";
 export type { Decision } from "./decide.js";
 export const VERSION = "0.1.0"; // x-release-please-version
@@ -65,13 +68,14 @@ export function wrap<T extends object>(client: T, options: WrapOptions = {}): T 
     company: options.company ?? process.env.AGENTCOMPILE_COMPANY,
     timeoutMs: options.timeoutMs ?? 2000,
     fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
+    mode,
   };
   const trail = new Trail(options.trail ?? true, options.onEvent);
   const captureOn = options.capture ?? ["1", "true", "yes"].includes(process.env.AGENTCOMPILE_CAPTURE ?? "");
   const capturer = captureOn
-    ? new Capturer(settings, undefined, options.scrub === false ? null : loadScrubKey())
+    ? capturerFor(settings, options.fetch ?? globalThis.fetch, options.scrub === false ? null : loadScrubKey())
     : null;
-  const router = { settings, trail, mode, capturer };
+  const router = { settings, trail, mode, capturer, breaker: new Breaker() };
   remember(settings); // outcome() sends with the client wrapped last
 
   const anyClient = client as Record<string, any>;
@@ -101,13 +105,14 @@ interface Router {
   trail: Trail;
   mode: Mode;
   capturer: Capturer | null;
+  breaker: Breaker;
 }
 
 type Build = (decision: Decision, params: Record<string, unknown>, stream: boolean) => unknown;
 
 function wrapCreate(router: Router, provider: Provider, resource: Record<string, any>, build: Build) {
-  const original = resource.create as (...args: unknown[]) => Promise<unknown>;
-  return async function create(params: Record<string, unknown>, ...rest: unknown[]): Promise<unknown> {
+  const original = resource.create as (...args: unknown[]) => unknown;
+  return function create(params: Record<string, unknown>, ...rest: unknown[]): AgentCompilePromise {
     const started = performance.now();
     const {
       conversationId: ownId,
@@ -118,6 +123,7 @@ function wrapCreate(router: Router, provider: Provider, resource: Record<string,
     } = params ?? {};
     const conversationId = (ownId ?? snakeId ?? currentConversation()) as string | undefined;
     const customer = (customerId ?? snakeCustomer ?? currentCustomer()) as string | undefined;
+    const stream = Boolean(realParams.stream);
     const capture = (result: unknown): unknown => {
       const capturer = router.capturer;
       if (!capturer) return result;
@@ -129,53 +135,68 @@ function wrapCreate(router: Router, provider: Provider, resource: Record<string,
         capturer.addStream(provider, conversationId, realParams, chunks, complete, customer),
       );
     };
-    let decision: Decision | null = null;
-    let decideMs: number | undefined;
-    let error: string | undefined;
-    if (conversationId) {
-      ({ decision, ms: decideMs, error } = await decide(
-        router.settings,
-        provider,
-        conversationId,
-        payload(realParams),
-      ));
-    }
-    let route: string;
-    let answer: Decision | null = null;
-    if (!conversationId) route = "no-conversation";
-    else if (!decision) route = "fail-open";
-    else if (decision.action === "forward") route = "forwarded";
-    else if (router.mode === "shadow") route = "shadow";
-    else ((route = "compiled"), (answer = decision));
-    const stream = Boolean(realParams.stream);
-    const record = () =>
-      router.trail.record({
-        conversation: conversationId,
-        provider,
-        model: realParams.model,
-        route,
-        action: decision?.action,
-        tool: decision?.tool,
-        reason: (decision?.action === "forward" ? decision.reason : undefined) || error,
-        events: decision?.events.length ? decision.events : undefined,
-        decide_ms: decideMs === undefined ? undefined : Math.round(decideMs * 10) / 10,
-        total_ms: Math.round((performance.now() - started) * 10) / 10,
-        stream: stream || undefined,
-      });
-    if (answer) {
-      try {
-        const result = build(answer, realParams, stream);
-        record();
-        return capture(result);
-      } catch (err) {
-        // fail open: a compiled answer we can't shape goes to the model
-        route = "fail-open";
-        error = `build: ${err instanceof Error ? err.name : "Error"}`;
+    const stage = (async (): Promise<Stage> => {
+      let decision: Decision | null = null;
+      let decideMs: number | undefined;
+      let error: string | undefined;
+      const why = conversationId ? unsupported(realParams) : undefined;
+      if (conversationId && !why) {
+        ({ decision, ms: decideMs, error } = await decide(
+          router.settings,
+          provider,
+          conversationId,
+          payload(realParams),
+          router.breaker,
+        ));
       }
-    }
-    const result = await original.call(resource, realParams, ...rest);
-    record();
-    return capture(result);
+      let route: string;
+      let answer: Decision | null = null;
+      if (!conversationId) route = "no-conversation";
+      else if (why) ((route = "unsupported"), (error = why));
+      else if (!decision) route = "fail-open";
+      else if (decision.action === "forward") route = "forwarded";
+      else if (router.mode === "shadow") route = "shadow";
+      else if (decision.action === "tool_call" && !offered(realParams, decision.tool)) {
+        // A tool the agent didn't offer this turn: its loop couldn't run it.
+        ((route = "fail-open"), (error = "tool not offered"));
+      } else ((route = "compiled"), (answer = decision));
+      let recorded = false;
+      const done = () => {
+        if (recorded) return;
+        recorded = true;
+        router.trail.record({
+          conversation: conversationId,
+          provider,
+          model: realParams.model,
+          route,
+          action: decision?.action,
+          tool: decision?.tool,
+          reason: (decision?.action === "forward" ? decision.reason : undefined) || error,
+          events: decision?.events.length ? decision.events : undefined,
+          decide_ms: decideMs === undefined ? undefined : Math.round(decideMs * 10) / 10,
+          total_ms: Math.round((performance.now() - started) * 10) / 10,
+          stream: stream || undefined,
+        });
+      };
+      if (answer) {
+        try {
+          const result = build(answer, realParams, stream);
+          done();
+          return { kind: "compiled", data: capture(result), stream, done };
+        } catch (err) {
+          // fail open: a compiled answer we can't shape goes to the model
+          route = "fail-open";
+          error = `build: ${err instanceof Error ? err.name : "Error"}`;
+        }
+      }
+      const api = original.call(resource, realParams, ...rest);
+      const finish = (data: unknown) => {
+        done();
+        return capture(data);
+      };
+      return { kind: "forward", api, finish, done };
+    })();
+    return new AgentCompilePromise(stage, provider);
   };
 }
 
