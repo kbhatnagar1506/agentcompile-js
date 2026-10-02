@@ -8,7 +8,8 @@
 
 import { type Provider, type Settings, endpoint, headers } from "./decide.js";
 import { jsonable, payload } from "./payload.js";
-import { scrubCall } from "./scrub.js";
+import { assemble } from "./assemble.js";
+import { scrubCall, scrubValue } from "./scrub.js";
 
 export const MAX_QUEUE = 2000;
 export const BATCH = 50;
@@ -43,6 +44,7 @@ export class Capturer {
     params: Record<string, unknown>,
     response: unknown,
     stream = false,
+    extra: { customer?: string; streamed?: { complete: boolean } } = {},
   ): void {
     try {
       let request: unknown = payload(params);
@@ -59,6 +61,14 @@ export class Capturer {
         request,
         response: answer,
       };
+      if (extra.customer) {
+        // The customer's id, scrubbed like everything else (an email becomes a token).
+        record.end_user = this.scrubKey ? scrubValue(extra.customer, this.scrubKey, "customer") : extra.customer;
+      }
+      if (extra.streamed) {
+        record.stream = true;
+        record.stream_complete = extra.streamed.complete;
+      }
       if (this.scrubKey) record.scrubbed = true;
       if (stream) record.stream = true;
       if (this.queue.length >= this.maxQueue) {
@@ -71,6 +81,22 @@ export class Capturer {
     } catch {
       this.dropped += 1;
     }
+  }
+
+  /** Queue a streamed call once its stream is done: the chunks assembled into the answer a
+   * non-streamed call would have had. A stream stopped early is kept and marked. */
+  addStream(
+    provider: Provider,
+    conversationId: string | undefined,
+    params: Record<string, unknown>,
+    chunks: unknown[],
+    complete: boolean,
+    customer?: string,
+  ): void {
+    this.add(provider, conversationId, params, assemble(provider, chunks), false, {
+      customer,
+      streamed: { complete },
+    });
   }
 
   /** Send everything queued now (short scripts, tests, before exit). */
