@@ -157,13 +157,22 @@ export class Capturer {
         continue;
       }
       if (batch.length && size + bytes > limits.batch) {
-        this.queue.unshift(...records.slice(i)); // the rest waits for the next batch, in order
+        this.putBack(records.slice(i)); // the rest waits for the next batch, in order
         break;
       }
       batch.push(line);
       size += bytes;
     }
     return batch;
+  }
+
+  /** Calls taken for a batch that didn't fit, back at the front, in order. They are the oldest:
+   * when newer calls filled the queue meanwhile, they are the ones dropped, and counted. */
+  putBack(rest: Record<string, unknown>[]): void {
+    const room = Math.max(this.maxQueue - this.queue.length, 0);
+    const keep = rest.slice(rest.length - Math.min(room, rest.length));
+    this.dropped += rest.length - keep.length;
+    this.queue.unshift(...keep);
   }
 
   private async sendBatch(): Promise<void> {

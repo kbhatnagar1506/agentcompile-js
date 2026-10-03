@@ -253,3 +253,17 @@ describe("nothing grows without bound", () => {
     expect(capturerFor(settings, f, null)).not.toBe(capturerFor({ ...settings, key: "other" }, f, null));
   });
 });
+
+describe("a full queue", () => {
+  it("drops the oldest, counted, when a batch goes back", () => {
+    const settings: Settings = { baseUrl: "http://ac.test", key: "k", timeoutMs: 1000, fetch: async () => json({}) };
+    const capturer = new Capturer(settings, 4);
+    capturer.queue.push({ id: 4 }, { id: 5 }, { id: 6 });
+    capturer.putBack([{ id: 2 }, { id: 3 }]); // older, one free place
+    expect(capturer.queue.map((r) => r.id)).toEqual([3, 4, 5, 6]);
+    expect(capturer.dropped).toBe(1);
+    capturer.putBack([{ id: 1 }]); // no room: the oldest goes
+    expect(capturer.queue.map((r) => r.id)).toEqual([3, 4, 5, 6]);
+    expect(capturer.dropped).toBe(2);
+  });
+});
