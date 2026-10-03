@@ -1,6 +1,6 @@
 {
   "name": "agentcompile",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Wrap your agent's model client: AgentCompile answers the jobs your agent repeats as verified routines, and forwards everything else to your model unchanged.",
   "license": "Apache-2.0",
   "author": "AgentCompile",
