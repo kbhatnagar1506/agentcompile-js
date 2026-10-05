@@ -7,7 +7,7 @@
 // importer reads: {provider, conversation_id, timestamp, request, response}.
 
 import { type Provider, type Settings, endpoint, headers } from "./decide.js";
-import { jsonable, payload } from "./payload.js";
+import { jsonable, requestOf } from "./payload.js";
 import { assemble } from "./assemble.js";
 import { scrubCall, scrubValue } from "./scrub.js";
 
@@ -68,7 +68,7 @@ export class Capturer {
     extra: { customer?: string; streamed?: { complete: boolean } } = {},
   ): void {
     try {
-      let request: unknown = payload(params);
+      let request: unknown = requestOf(params);
       // A streamed answer is not captured yet: the record keeps the request and says so.
       let answer: unknown = stream ? null : jsonable(response);
       if (this.scrubKey) {

@@ -2,6 +2,8 @@
 
 // What the engine reads; everything else stays between the customer and their provider.
 const FIELDS = ["model", "messages", "system", "tools"] as const;
+// A Responses API call (OpenAI's `responses.create`): the same, in that API's own words.
+const RESPONSES_FIELDS = ["model", "input", "instructions", "tools", "previous_response_id"] as const;
 
 export function jsonable(value: unknown): unknown {
   if (value === null || value === undefined) return value ?? null;
@@ -18,8 +20,17 @@ export function jsonable(value: unknown): unknown {
 }
 
 export function payload(params: Record<string, unknown>): Record<string, unknown> {
+  return pick(params, FIELDS);
+}
+
+/** What capture keeps of a call: `payload`, or a Responses API call's own fields. */
+export function requestOf(params: Record<string, unknown>): Record<string, unknown> {
+  return "input" in params && !("messages" in params) ? pick(params, RESPONSES_FIELDS) : payload(params);
+}
+
+function pick(params: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const field of FIELDS) {
+  for (const field of fields) {
     if (params[field] !== undefined && params[field] !== null) out[field] = jsonable(params[field]);
   }
   return out;

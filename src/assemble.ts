@@ -1,6 +1,7 @@
 // Streamed answers, captured whole: each chunk reaches your agent untouched as it arrives, a
 // copy is kept, and when the stream ends the pieces are assembled into the shape a non-streamed
-// answer has (a chat completion, or an Anthropic message). Same rules as the Python SDK.
+// answer has (a chat completion, a Responses API response, or an Anthropic message). Same rules
+// as the Python SDK.
 
 import { jsonable } from "./payload.js";
 
@@ -8,7 +9,10 @@ type Json = Record<string, any>;
 
 export function assemble(provider: string, chunks: unknown[]): Json | null {
   try {
-    return provider === "openai" ? assembleOpenAI(chunks as Json[]) : assembleAnthropic(chunks as Json[]);
+    if (provider !== "openai") return assembleAnthropic(chunks as Json[]);
+    const events = chunks as Json[];
+    if (events.some((c) => String(c?.type ?? "").startsWith("response."))) return assembleResponses(events);
+    return assembleOpenAI(events);
   } catch {
     return null; // never break the agent over a shape we didn't expect
   }
@@ -49,6 +53,30 @@ function assembleOpenAI(chunks: Json[]): Json {
   };
   if (usage) out.usage = usage;
   return out;
+}
+
+/** The events that end a Responses API stream, each carrying the whole response. */
+const RESPONSE_DONE = ["response.completed", "response.incomplete", "response.failed"];
+
+/** A Responses API stream: its last event carries the whole response. A stream stopped early
+ * has none, so the response is rebuilt from the items it finished. */
+function assembleResponses(events: Json[]): Json {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (RESPONSE_DONE.includes(event.type) && event.response && typeof event.response === "object") {
+      return { ...event.response };
+    }
+  }
+  let response: Json = {};
+  const items = new Map<number, Json>();
+  for (const event of events) {
+    if (event.type === "response.created" && event.response) response = { ...event.response };
+    else if (event.type === "response.output_item.done") {
+      items.set(Number(event.output_index ?? items.size), { ...(event.item ?? {}) });
+    }
+  }
+  response.output = [...items.keys()].sort((a, b) => a - b).map((i) => items.get(i));
+  return response;
 }
 
 function assembleAnthropic(events: Json[]): Json {

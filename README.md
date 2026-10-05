@@ -83,6 +83,30 @@ await conversation(ticket.id, () => runAgent(ticket), { customer: ticket.custome
 Streamed answers are captured too: your agent reads the stream as always, and the whole answer
 is captured once it ends.
 
+## The Responses API and any framework
+
+A wrapped OpenAI client captures `client.responses.create(...)` as well (streamed or not). Those
+calls always go to your model: compiled answers come in Chat Completions' and Anthropic's shapes.
+
+When a framework builds its own client (the Vercel AI SDK, LangChain.js, Mastra), give it a
+capturing `fetch` instead of wrapping anything:
+
+```ts
+import { captureFetch, conversation } from "agentcompile";
+
+const fetch = captureFetch({ key: "ack_..." });
+const openai = createOpenAI({ fetch });                       // Vercel AI SDK
+const llm = new ChatOpenAI({ configuration: { fetch } });     // LangChain.js
+const client = new OpenAI({ fetch });                         // any SDK that takes a fetch
+
+await conversation(ticket.id, () => runAgent(ticket));
+```
+
+It captures the POSTs to `/chat/completions`, `/responses` and `/messages` that pass through it,
+scrubbed the same way, and leaves everything else alone. It only captures: to have known jobs
+answered compiled, use `wrap`. `wrapped:` sets the fetch it sends through (default the global
+one).
+
 ## Privacy
 
 With `capture: true`, personal data is scrubbed on your machine before anything is sent:
