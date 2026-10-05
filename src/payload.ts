@@ -3,7 +3,7 @@
 // What the engine reads; everything else stays between the customer and their provider.
 const FIELDS = ["model", "messages", "system", "tools"] as const;
 // A Responses API call (OpenAI's `responses.create`): the same, in that API's own words.
-const RESPONSES_FIELDS = ["model", "input", "instructions", "tools", "previous_response_id"] as const;
+const RESPONSES_FIELDS = ["model", "input", "instructions", "tools", "previous_response_id", "conversation"] as const;
 
 export function jsonable(value: unknown): unknown {
   if (value === null || value === undefined) return value ?? null;
