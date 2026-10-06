@@ -21,6 +21,7 @@ import { payload } from "./payload.js";
 import { AgentCompilePromise, type Stage } from "./promise.js";
 import { offered, unsupported } from "./shape.js";
 import { loadScrubKey } from "./scrub.js";
+import { DEFAULT_URL } from "./defaults.js";
 import { type OnEvent, Trail } from "./trail.js";
 
 export { conversation } from "./conversation.js";
@@ -28,7 +29,8 @@ export { AgentCompilePromise } from "./promise.js";
 export { OUTCOMES, type Outcome, outcome } from "./outcome.js";
 export type { Decision } from "./decide.js";
 export const VERSION = "0.1.0"; // x-release-please-version
-export const DEFAULT_URL = "https://api.tryagentcompile.com";
+export { DEFAULT_URL } from "./defaults.js";
+export { type CaptureFetchOptions, captureFetch } from "./fetch.js";
 
 export type Mode = "live" | "shadow";
 
@@ -82,9 +84,15 @@ export function wrap<T extends object>(client: T, options: WrapOptions = {}): T 
   const completions = anyClient.chat?.completions;
   if (completions && typeof completions.create === "function") {
     const create = wrapCreate(router, "openai", completions, buildOpenAI);
-    return override(client, {
+    const replaced: Record<string, unknown> = {
       chat: override(anyClient.chat, { completions: override(completions, { create }) }),
-    });
+    };
+    const responses = anyClient.responses;
+    if (responses && typeof responses.create === "function") {
+      // The Responses API (the OpenAI Agents SDK's default): captured, always the model's.
+      replaced.responses = override(responses, { create: wrapForward(router, responses) });
+    }
+    return override(client, replaced);
   }
   const messages = anyClient.messages;
   if (messages && typeof messages.create === "function") {
@@ -110,31 +118,81 @@ interface Router {
 
 type Build = (decision: Decision, params: Record<string, unknown>, stream: boolean) => unknown;
 
+/** Our keywords taken off a call (they never reach the model): its conversation and customer. */
+function split(params: Record<string, unknown>) {
+  const {
+    conversationId: ownId,
+    conversation_id: snakeId,
+    customerId,
+    customer_id: snakeCustomer,
+    ...realParams
+  } = params ?? {};
+  return {
+    conversationId: (ownId ?? snakeId ?? currentConversation()) as string | undefined,
+    customer: (customerId ?? snakeCustomer ?? currentCustomer()) as string | undefined,
+    realParams,
+    stream: Boolean(realParams.stream),
+  };
+}
+
+/** Queue a call's answer for capture; returns what to hand back (a stream comes back wrapped, so
+ * its answer is captured once the agent has read it). */
+function capturing(router: Router, provider: Provider, call: ReturnType<typeof split>) {
+  const { conversationId, customer, realParams, stream } = call;
+  return (result: unknown): unknown => {
+    const capturer = router.capturer;
+    if (!capturer) return result;
+    if (!stream || !result || typeof result !== "object") {
+      capturer.add(provider, conversationId, realParams, result, stream, { customer });
+      return result;
+    }
+    return capturingStream(result, (chunks, complete) =>
+      capturer.addStream(provider, conversationId, realParams, chunks, complete, customer),
+    );
+  };
+}
+
+/** Why a Responses API call is never asked about: compiled answers come in Chat Completions' and
+ * Anthropic's shapes, so these calls go to the model, captured like any other. */
+export const RESPONSES_API = "responses api";
+
+/** create() for an API we capture but don't answer: straight to the model. */
+function wrapForward(router: Router, resource: Record<string, any>) {
+  const original = resource.create as (...args: unknown[]) => unknown;
+  return function create(params: Record<string, unknown>, ...rest: unknown[]): AgentCompilePromise {
+    const started = performance.now();
+    const call = split(params);
+    const capture = capturing(router, "openai", call);
+    let recorded = false;
+    const done = () => {
+      if (recorded) return;
+      recorded = true;
+      router.trail.record({
+        conversation: call.conversationId,
+        provider: "openai",
+        model: call.realParams.model,
+        route: call.conversationId ? "unsupported" : "no-conversation",
+        reason: call.conversationId ? RESPONSES_API : undefined,
+        total_ms: Math.round((performance.now() - started) * 10) / 10,
+        stream: call.stream || undefined,
+      });
+    };
+    const api = original.call(resource, call.realParams, ...rest);
+    const finish = (data: unknown) => {
+      done();
+      return capture(data);
+    };
+    return new AgentCompilePromise(Promise.resolve<Stage>({ kind: "forward", api, finish, done }), "openai");
+  };
+}
+
 function wrapCreate(router: Router, provider: Provider, resource: Record<string, any>, build: Build) {
   const original = resource.create as (...args: unknown[]) => unknown;
   return function create(params: Record<string, unknown>, ...rest: unknown[]): AgentCompilePromise {
     const started = performance.now();
-    const {
-      conversationId: ownId,
-      conversation_id: snakeId,
-      customerId,
-      customer_id: snakeCustomer,
-      ...realParams
-    } = params ?? {};
-    const conversationId = (ownId ?? snakeId ?? currentConversation()) as string | undefined;
-    const customer = (customerId ?? snakeCustomer ?? currentCustomer()) as string | undefined;
-    const stream = Boolean(realParams.stream);
-    const capture = (result: unknown): unknown => {
-      const capturer = router.capturer;
-      if (!capturer) return result;
-      if (!stream || !result || typeof result !== "object") {
-        capturer.add(provider, conversationId, realParams, result, stream, { customer });
-        return result;
-      }
-      return capturingStream(result, (chunks, complete) =>
-        capturer.addStream(provider, conversationId, realParams, chunks, complete, customer),
-      );
-    };
+    const call = split(params);
+    const { conversationId, realParams, stream } = call;
+    const capture = capturing(router, provider, call);
     const stage = (async (): Promise<Stage> => {
       let decision: Decision | null = null;
       let decideMs: number | undefined;
