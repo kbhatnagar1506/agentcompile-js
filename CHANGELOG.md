@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/kbhatnagar1506/agentcompile-js/compare/v0.2.0...v0.3.0) (2026-10-07)
+
+
+### Features
+
+* retry failed capture batches with backoff; default decision budget 5 s ([#12](https://github.com/kbhatnagar1506/agentcompile-js/issues/12)) ([aec0206](https://github.com/kbhatnagar1506/agentcompile-js/commit/aec0206ff22f613392fea2b89aaca6633a83a3e0))
+
 ## [0.2.0](https://github.com/kbhatnagar1506/agentcompile-js/compare/v0.1.0...v0.2.0) (2026-10-06)
 
 
