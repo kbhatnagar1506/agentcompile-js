@@ -28,7 +28,7 @@ export { conversation } from "./conversation.js";
 export { AgentCompilePromise } from "./promise.js";
 export { OUTCOMES, type Outcome, outcome } from "./outcome.js";
 export type { Decision } from "./decide.js";
-export const VERSION = "0.1.0"; // x-release-please-version
+export const VERSION = "0.2.0"; // x-release-please-version
 export { DEFAULT_URL } from "./defaults.js";
 export { type CaptureFetchOptions, captureFetch } from "./fetch.js";
 
