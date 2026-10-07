@@ -2,8 +2,9 @@
 // can find the jobs your agent repeats (opt-in: `wrap(client, { capture: true })`).
 //
 // Never in the way: calls are queued and sent in batches on a timer that doesn't keep the
-// process alive; a full queue drops the oldest, a failed send is dropped and counted, nothing
-// here ever throws into your agent. Each record is the exchange-log shape AgentCompile's
+// process alive; a full queue drops the oldest, a send that fails for a passing reason (no
+// connection, 408, 429, 5xx) is retried a few times with backoff, one that still fails is dropped
+// and counted, and nothing here ever throws into your agent. Each record is the exchange-log shape AgentCompile's
 // importer reads: {provider, conversation_id, timestamp, request, response}.
 
 import { type Provider, type Settings, endpoint, headers } from "./decide.js";
@@ -17,6 +18,19 @@ export const BATCH = 50;
 // limits.record on its own (a huge history) is dropped and counted.
 export const limits = { batch: 4 * 1024 * 1024, record: 7 * 1024 * 1024 };
 export const INTERVAL_MS = 1000;
+// A failed batch is tried `times` more, waiting backoffMs, then twice that, ... (or what the
+// server's Retry-After asks, up to maxWaitMs); about 3.5 s in all before it is dropped.
+export const retry = {
+  times: 3,
+  backoffMs: 500,
+  maxWaitMs: 10_000,
+  sleep: (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      (timer as { unref?: () => void }).unref?.(); // never keeps the process alive
+    }),
+};
+const PASSING = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 const all = new Set<Capturer>();
 const reused = new Map<unknown, Map<string, Capturer>>();
@@ -45,7 +59,10 @@ export async function flushAll(): Promise<void> {
 export class Capturer {
   sent = 0;
   dropped = 0;
+  /** Calls dropped after their send failed (and was retried, if it could be). */
   failed = 0;
+  /** Batch sends tried again. */
+  retried = 0;
   readonly queue: Record<string, unknown>[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private sending: Promise<void> = Promise.resolve();
@@ -120,9 +137,11 @@ export class Capturer {
     });
   }
 
-  /** Send everything queued now (short scripts, tests, before exit). */
-  async flush(): Promise<void> {
-    while (this.queue.length) await this.send();
+  /** Send everything queued now (short scripts, tests, before exit); retries never wait past
+   * timeoutMs from now. */
+  async flush(timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.queue.length && Date.now() < deadline) await this.send(deadline);
   }
 
   private start(): void {
@@ -132,8 +151,8 @@ export class Capturer {
     (this.timer as { unref?: () => void }).unref?.();
   }
 
-  private send(): Promise<void> {
-    this.sending = this.sending.then(() => this.sendBatch());
+  private send(deadline?: number): Promise<void> {
+    this.sending = this.sending.then(() => this.sendBatch(deadline));
     return this.sending;
   }
 
@@ -175,19 +194,42 @@ export class Capturer {
     this.queue.unshift(...keep);
   }
 
-  private async sendBatch(): Promise<void> {
+  /** Send one batch, retrying a passing failure with backoff; never past `deadline`, when given. */
+  private async sendBatch(deadline?: number): Promise<void> {
     const batch = this.take();
     if (!batch.length) return;
+    const body = `{"exchanges": [${batch.join(", ")}]}`;
+    for (let attempt = 0; ; attempt++) {
+      const asked = await this.post(body);
+      if (asked === null) {
+        this.sent += batch.length;
+        return;
+      }
+      if (asked < 0 || attempt >= retry.times) break;
+      const wait = Math.min(Math.max(asked, retry.backoffMs * 2 ** attempt), retry.maxWaitMs);
+      if (deadline !== undefined && Date.now() + wait > deadline) break;
+      this.retried += 1;
+      await retry.sleep(wait);
+    }
+    this.failed += batch.length;
+  }
+
+  /** null when the batch was taken; else how long the server asks us to wait before trying
+   * again (0: no preference), or -1 for a failure retrying won't fix. */
+  private async post(body: string): Promise<number | null> {
+    let response: Response;
     try {
-      const response = await this.settings.fetch(endpoint(this.settings, "/v1/capture"), {
+      response = await this.settings.fetch(endpoint(this.settings, "/v1/capture"), {
         method: "POST",
         headers: headers(this.settings),
-        body: `{"exchanges": [${batch.join(", ")}]}`,
+        body,
       });
-      if (response.status === 200) this.sent += batch.length;
-      else this.failed += batch.length;
     } catch {
-      this.failed += batch.length;
+      return 0;
     }
+    if (response.status === 200) return null;
+    if (!PASSING.has(response.status)) return -1;
+    const seconds = Number(response.headers?.get?.("retry-after") ?? 0);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
   }
 }

@@ -41,7 +41,7 @@ export interface WrapOptions {
   baseUrl?: string;
   /** "live" answers known jobs; "shadow" decides but always calls your model. */
   mode?: Mode;
-  /** How long to wait for a decision before failing open (default 2000 ms). */
+  /** How long to wait for a decision before failing open (default 5000 ms). */
   timeoutMs?: number;
   /** A path, true for ~/.agentcompile/trail.jsonl, or false. */
   trail?: string | boolean;
@@ -68,7 +68,7 @@ export function wrap<T extends object>(client: T, options: WrapOptions = {}): T 
     baseUrl: options.baseUrl ?? process.env.AGENTCOMPILE_URL ?? DEFAULT_URL,
     key: options.key ?? process.env.AGENTCOMPILE_KEY,
     company: options.company ?? process.env.AGENTCOMPILE_COMPANY,
-    timeoutMs: options.timeoutMs ?? 2000,
+    timeoutMs: options.timeoutMs ?? 5000,
     fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     mode,
   };

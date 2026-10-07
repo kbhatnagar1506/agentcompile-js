@@ -27,7 +27,7 @@ export interface CaptureFetchOptions {
   company?: string;
   /** Tokenize emails, cards, phones and account numbers on this machine first (default true). */
   scrub?: boolean;
-  /** Bounds each capture send, not your calls (default 2000 ms). */
+  /** Bounds each capture send, not your calls (default 5000 ms). */
   timeoutMs?: number;
   /** The fetch model calls go through (default globalThis.fetch). */
   wrapped?: typeof fetch;
@@ -102,7 +102,7 @@ export function captureFetch(options: CaptureFetchOptions = {}): typeof fetch {
     baseUrl: options.baseUrl ?? process.env.AGENTCOMPILE_URL ?? DEFAULT_URL,
     key: options.key ?? process.env.AGENTCOMPILE_KEY,
     company: options.company ?? process.env.AGENTCOMPILE_COMPANY,
-    timeoutMs: options.timeoutMs ?? 2000,
+    timeoutMs: options.timeoutMs ?? 5000,
     fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
   };
   remember(settings);
